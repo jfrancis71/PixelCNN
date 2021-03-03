@@ -38,25 +38,26 @@ class PixelCNNMaskConv2d(nn.Conv2d):
 
 class PixelCNN(nn.Module):
 
-    def __init__(self, num_input_channels, num_distribution_params, kernel_size=3, num_layers=5, num_hidden_features=64, num_spatial_conditional_channels=None):
+    def __init__(self, num_input_channels, num_distribution_params, kernel_size=5, num_layers=7, num_hidden_features=128, num_conditional_channels=None):
         super(PixelCNN, self).__init__()
         h = num_hidden_features
-        if num_spatial_conditional_channels is not None:
-            self.layer_spatial_prj = nn.Conv2d(num_spatial_conditional_channels, h*num_input_channels, kernel_size=(1,1))
-        else:
-            self.layer_spatial_prj = None
         self.input_layer = PixelCNNMaskConv2d("A", kernel_size, num_input_channels, 1, h)
         self.layers = nn.ModuleList([PixelCNNMaskConv2d("B", kernel_size, num_input_channels, h, h) for _ in range(num_layers)])
+        if num_conditional_channels is not None:
+            self.layers_conditional_prj = nn.ModuleList([nn.Linear(num_conditional_channels, h*num_input_channels, bias=False) for _ in range(num_layers)])
+        else:
+            self.layers_conditional_prj = None
         self.output_layer = PixelCNNMaskConv2d("B", kernel_size, num_input_channels, h, num_distribution_params)
 
-    def forward(self, x, spatial_conditional=None):
+    def forward(self, x, conditional=None):
         x = self.input_layer(x)
-        if spatial_conditional is not None:
-            prj = self.layer_spatial_prj(spatial_conditional)
-            x += prj
         x = nn.ReLU()(x)
-        for layer in self.layers:
-            x = layer(x)
+        for l in range(0,len(self.layers)):
+            x = self.layers[l](x)
+            if conditional is not None:
+                prj = self.layers_conditional_prj[l](conditional)
+                add_x = x.permute((2,3,0,1)) + prj
+                x = add_x.permute((2,3,0,1))
             x = nn.ReLU()(x)
         x = self.output_layer(x)
         return x
