@@ -35,29 +35,46 @@ class PixelCNNMaskConv2d(nn.Conv2d):
         self.weight.data *= self.mask
         return super().forward(x)
 
+class ResidualBlock(nn.Module):
+    def __init__(self, num_input_channels, in_data_channel_width, num_h=None):
+        super(ResidualBlock, self).__init__()
+        self.layer1 = PixelCNNMaskConv2d("B", kernel_size=1, num_input_channels=num_input_channels, in_data_channel_width=in_data_channel_width, out_data_channel_width=in_data_channel_width//2)
+        self.layer2 = PixelCNNMaskConv2d("B", kernel_size=3, num_input_channels=num_input_channels, in_data_channel_width=in_data_channel_width//2, out_data_channel_width=in_data_channel_width//2)
+        self.layer3 = PixelCNNMaskConv2d("B", kernel_size=1, num_input_channels=num_input_channels, in_data_channel_width=in_data_channel_width//2, out_data_channel_width=in_data_channel_width)
+        if num_h is not None:
+            self.conditional_prj = nn.Linear(num_h, num_input_channels*in_data_channel_width//2, bias=False)
+        else:
+            self.conditional_prj = None
+    
+    def forward(self, x, h=None):
+        r = self.layer1(x)
+        r = nn.ReLU()(r)
+        r = self.layer2(r)
+        if h is not None:
+            prj = self.conditional_prj(h)
+            add_r = r.permute((2,3,0,1)) + prj
+            r = add_r.permute((2,3,0,1))
+
+        r = nn.ReLU()(r)
+        r = self.layer3(r)
+        r = nn.ReLU()(r)
+        return x+r
 
 class PixelCNN(nn.Module):
-
-    def __init__(self, num_input_channels, num_distribution_params, kernel_size=5, num_layers=7, num_hidden_features=128, num_conditional_channels=None):
+    def __init__(self, num_input_channels, num_distribution_params, num_h=None, num_blocks=15, data_channel_width=256):
         super(PixelCNN, self).__init__()
-        h = num_hidden_features
-        self.input_layer = PixelCNNMaskConv2d("A", kernel_size, num_input_channels, 1, h)
-        self.layers = nn.ModuleList([PixelCNNMaskConv2d("B", kernel_size, num_input_channels, h, h) for _ in range(num_layers)])
-        if num_conditional_channels is not None:
-            self.layers_conditional_prj = nn.ModuleList([nn.Linear(num_conditional_channels, h*num_input_channels, bias=False) for _ in range(num_layers)])
-        else:
-            self.layers_conditional_prj = None
-        self.output_layer = PixelCNNMaskConv2d("B", kernel_size, num_input_channels, h, num_distribution_params)
-
-    def forward(self, x, conditional=None):
+        self.input_layer = PixelCNNMaskConv2d("A", kernel_size=7, num_input_channels=num_input_channels, in_data_channel_width=1, out_data_channel_width=data_channel_width)
+        blocks = [ ResidualBlock(num_input_channels, data_channel_width, num_h) for _ in range(num_blocks) ]
+        self.blocks = nn.ModuleList(blocks)
+        self.layer1 = PixelCNNMaskConv2d("B", kernel_size=1, num_input_channels=num_input_channels, in_data_channel_width=data_channel_width, out_data_channel_width=data_channel_width//2)
+        self.layer2 = PixelCNNMaskConv2d("B", kernel_size=1, num_input_channels=num_input_channels, in_data_channel_width=data_channel_width//2, out_data_channel_width=num_distribution_params)
+    
+    def forward(self, x, h=None):
         x = self.input_layer(x)
+        for r in self.blocks:
+            x = r(x, h)
         x = nn.ReLU()(x)
-        for l in range(0,len(self.layers)):
-            x = self.layers[l](x)
-            if conditional is not None:
-                prj = self.layers_conditional_prj[l](conditional)
-                add_x = x.permute((2,3,0,1)) + prj
-                x = add_x.permute((2,3,0,1))
-            x = nn.ReLU()(x)
-        x = self.output_layer(x)
+        x = self.layer1(x)
+        x = nn.ReLU()(x)
+        x = self.layer2(x)
         return x
